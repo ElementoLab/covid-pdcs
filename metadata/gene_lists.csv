@@ -1,0 +1,61 @@
+gene_name,gene_set_abbrev,gene_set_name
+ISG15,ISG,Interferon stimulated genes
+IFI6,ISG,Interferon stimulated genes
+GBP3,ISG,Interferon stimulated genes
+GBP1,ISG,Interferon stimulated genes
+GBP4,ISG,Interferon stimulated genes
+GBP5,ISG,Interferon stimulated genes
+CXCL10,ISG,Interferon stimulated genes
+IFIT3,ISG,Interferon stimulated genes
+IFIT5,ISG,Interferon stimulated genes
+IFITM2,ISG,Interferon stimulated genes
+IFITM1,ISG,Interferon stimulated genes
+IFITM3,ISG,Interferon stimulated genes
+OAS1,ISG,Interferon stimulated genes
+OAS3,ISG,Interferon stimulated genes
+OAS2,ISG,Interferon stimulated genes
+ISG20,ISG,Interferon stimulated genes
+IFI35,ISG,Interferon stimulated genes
+S100A12,CRI,COVID-19 related inflammatory genes
+S100A8,CRI,COVID-19 related inflammatory genes
+IL1A,CRI,COVID-19 related inflammatory genes
+IL1B,CRI,COVID-19 related inflammatory genes
+CCL20,CRI,COVID-19 related inflammatory genes
+CXCL3,CRI,COVID-19 related inflammatory genes
+CXCL2,CRI,COVID-19 related inflammatory genes
+CXCL9,CRI,COVID-19 related inflammatory genes
+IL15,CRI,COVID-19 related inflammatory genes
+IL12B,CRI,COVID-19 related inflammatory genes
+TNF,CRI,COVID-19 related inflammatory genes
+IL6,CRI,COVID-19 related inflammatory genes
+IL7,CRI,COVID-19 related inflammatory genes
+IFNB1,CRI,COVID-19 related inflammatory genes
+CTSD,CRI,COVID-19 related inflammatory genes
+IL18,CRI,COVID-19 related inflammatory genes
+IL23A,CRI,COVID-19 related inflammatory genes
+CCL7,CRI,COVID-19 related inflammatory genes
+CCL8,CRI,COVID-19 related inflammatory genes
+CCL5,CRI,COVID-19 related inflammatory genes
+CCL15,CRI,COVID-19 related inflammatory genes
+CCL3,CRI,COVID-19 related inflammatory genes
+CCL4,CRI,COVID-19 related inflammatory genes
+IFNL1,CRI,COVID-19 related inflammatory genes
+PRKCE,FG,Fibrotic genes
+RHOH,FG,Fibrotic genes
+EDN1,FG,Fibrotic genes
+VEGFA,FG,Fibrotic genes
+PDGFA,FG,Fibrotic genes
+ITGB8,FG,Fibrotic genes
+EZH2,FG,Fibrotic genes
+FTH1,FG,Fibrotic genes
+WNT5B,FG,Fibrotic genes
+ITGB7,FG,Fibrotic genes
+RAP1B,FG,Fibrotic genes
+SMAD3,FG,Fibrotic genes
+CREBBP,FG,Fibrotic genes
+MYL12A,FG,Fibrotic genes
+MYL12B,FG,Fibrotic genes
+CACNA1A,FG,Fibrotic genes
+CD40,FG,Fibrotic genes
+CEBPB,FG,Fibrotic genes
+PDGFB,FG,Fibrotic genes

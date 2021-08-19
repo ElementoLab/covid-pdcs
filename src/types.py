@@ -9,8 +9,17 @@ import pathlib
 
 import matplotlib
 import pandas
-import numpy
 from anndata import AnnData as _AnnData
+
+
+__all__ = [
+    "Path",
+    "Series",
+    "DataFrame",
+    "AnnData",
+    "Figure",
+    "Axis",
+]
 
 
 class Path(pathlib.Path):
