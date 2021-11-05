@@ -2,9 +2,26 @@
 Utility functions used throughout the project.
 """
 
+import typing as tp
+
+import pandas as pd
 import matplotlib
 
-from src.types import Figure
+from src.types import Figure, Path
+
+
+def load_gene_signatures(msigdb: bool = False) -> tp.Dict[str, tp.List[str]]:
+    if not msigdb:
+        sigs = pd.read_csv("metadata/gene_lists.csv")
+        return sigs.groupby("gene_set_name")["gene_name"].apply(list).to_dict()
+    msigdb_f = Path("h.all.v7.4.symbols.gmt")
+
+    msigdb_h = msigdb_f.open()
+    sets = dict()
+    for line in msigdb_h.readlines():
+        s = line.strip().split("\t")
+        sets[s[0]] = s[2:]
+    return sets
 
 
 def rasterize_scanpy(fig: Figure) -> None:
@@ -14,7 +31,7 @@ def rasterize_scanpy(fig: Figure) -> None:
     """
     import warnings
 
-    with warnings.catch_warnings(record=False) as w:
+    with warnings.catch_warnings(record=False):
         warnings.simplefilter("ignore")
         yes_class = (
             matplotlib.collections.PathCollection,
@@ -35,3 +52,9 @@ def rasterize_scanpy(fig: Figure) -> None:
                         if not isinstance(_cc, not_clss):
                             if isinstance(_cc, yes_class):
                                 _cc.set_rasterized(True)
+
+
+def share_axis_scanpy(fig: Figure) -> None:
+    for ax in fig.axes[::2]:
+        ax.sharex(fig.axes[0])
+        ax.sharey(fig.axes[0])

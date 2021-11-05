@@ -16,7 +16,7 @@ import scanpy as sc
 from seaborn_extensions import clustermap
 
 from src.types import Path
-from src.utils import rasterize_scanpy
+from src.utils import rasterize_scanpy, load_gene_signatures
 
 
 # TODO:
@@ -75,20 +75,6 @@ def load_delorey_adata():
 
     sc.pl.umap(b, color="SubCluster")
     # Where are the promissed pDCs from Fig 2a and ED2i???
-
-
-def load_gene_signatures(msigdb: bool = False) -> tp.Dict:
-    if not msigdb:
-        sigs = pd.read_csv("metadata/gene_lists.csv")
-        return sigs.groupby("gene_set_name")["gene_name"].apply(list).to_dict()
-    msigdb_f = Path("h.all.v7.4.symbols.gmt")
-
-    msigdb_h = msigdb_f.open()
-    sets = dict()
-    for line in msigdb_h.readlines():
-        s = line.strip().split("\t")
-        sets[s[0]] = s[2:]
-    return sets
 
 
 def cohort_structure(a: AnnData) -> None:
