@@ -5,13 +5,9 @@ Analysis of scRNA-seq data from BALF in light of pDC action in COVID-19.
 (10.1038/s41591-020-0901-9)
 """
 
-import sys
-import typing as tp
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
 from anndata import AnnData
 import scanpy as sc
 from seaborn_extensions import clustermap, swarmboxenplot
@@ -371,6 +367,8 @@ clustermap = partial(clustermap, dendrogram_ratio=0.1)
 
 
 if __name__ == "__main__" and "get_ipython" not in locals():
+    import sys
+
     try:
         sys.exit(main())
     except KeyboardInterrupt:
