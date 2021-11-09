@@ -10,6 +10,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from anndata import AnnData
 import scanpy as sc
+import seaborn as sns
+import pingouin as pg
 from seaborn_extensions import clustermap, swarmboxenplot
 
 from src.types import Path
@@ -19,7 +21,7 @@ from src.utils import rasterize_scanpy, load_gene_signatures
 # TODO:
 # # - [x] phenotype
 # # - [x] quantify signatures
-# # - [ ] correlate signatures
+# # - [x] correlate signatures
 
 
 def main():
@@ -303,6 +305,7 @@ def interferon_expression(a):
 def score_cell_types(a):
     import matplotlib
 
+    signames = list()
     for msigdb in [True, False]:
         sign = ".MSigDB" if msigdb else ""
 
@@ -310,14 +313,13 @@ def score_cell_types(a):
         sig_f = consts.results_dir / f"signature_enrichment{sign}.csv"
         if not sig_f.exists():
             sigs = load_gene_signatures(msigdb=msigdb)
-            signames = list(sigs.keys())
             for sig in sigs:
                 sc.tl.score_genes(a, sigs[sig], use_raw=True, score_name=sig)
-            a.obs[signames].to_csv(sig_f)
+            a.obs[sigs].to_csv(sig_f)
         else:
             sigs = load_gene_signatures(msigdb=msigdb)
-            signames = list(sigs.keys())
-            a.obs = a.obs.join(pd.read_csv(sig_f, index_col=0))
+            # a.obs = a.obs.join(pd.read_csv(sig_f, index_col=0))
+        signames += list(sigs.keys())
 
     # Plot signatures at single-cell (UMAP overlay)
     signames = [
@@ -381,6 +383,103 @@ def score_cell_types(a):
         ax.set(ylabel=sig)
     fig.savefig(
         consts.results_dir / f"signature_enrichment.{cell_type_label}.barplot.svg",
+        **consts.figkws,
+    )
+
+    corrs = a.obs.groupby(cell_type_label)[signames].corr()
+
+    corr = corrs.reset_index().pivot_table(index=cell_type_label, columns="level_1")
+    corr = corr.loc[:, ~(corr == 1).all()]
+    corr = corr.loc[:, corr.sum().drop_duplicates().index]
+    grid = clustermap(corr, cmap="RdBu_r", center=0, figsize=(7, 10), col_cluster=False)
+    grid.fig.savefig(
+        consts.results_dir
+        / f"signature_enrichment.correlation.{cell_type_label}.heatmap.immune.svg",
+        **consts.figkws,
+    )
+
+    cts = a.obs[cell_type_label].unique()
+    for ct in cts:
+        _a = "HALLMARK_INTERFERON_ALPHA_RESPONSE"
+        _b = "COVID-19 related inflammatory genes"
+        fig, axes = plt.subplots(1, 2, sharex=True, sharey=True, figsize=(3 * 2, 3))
+        _tpc1 = a.obs.loc[
+            (a.obs[cell_type_label] == ct) & (a.obs["disease"] == "Control")
+        ]
+        _tpc2 = a.obs.loc[
+            (a.obs[cell_type_label] == ct) & (a.obs["disease"] != "Control")
+        ]
+        if _tpc1.empty or _tpc2.empty:
+            continue
+        n = min(_tpc1.shape[0], _tpc2.shape[0])
+        _tpc1 = _tpc1.sample(n=n)
+        _tpc2 = _tpc2.sample(n=n)
+
+        _tpc1[[_a, _b]] += 0.5
+        _tpc2[[_a, _b]] += 0.5
+        axes[0].loglog()
+        axes[1].loglog()
+        r1 = pg.corr(_tpc1[_a], _tpc1[_b]).squeeze()
+        axes[0].set(title=f"r = {r1['r']:.3f}; p = {r1['p-val']:.2e}")
+        r2 = pg.corr(_tpc2[_a], _tpc2[_b]).squeeze()
+        axes[1].set(title=f"r = {r2['r']:.3f}; p = {r2['p-val']:.2e}")
+
+        axes[0].scatter(
+            _tpc1[_a],
+            _tpc1[_b],
+            alpha=0.2,
+            s=5,
+            color=sns.color_palette()[0],
+            rasterized=True,
+        )
+        sns.regplot(
+            x=_tpc1[_a],
+            y=_tpc1[_b],
+            ax=axes[0],
+            scatter=False,
+            color=sns.color_palette()[0],
+        )
+        axes[1].scatter(
+            _tpc2[_a],
+            _tpc2[_b],
+            alpha=0.2,
+            s=5,
+            color=sns.color_palette()[1],
+            rasterized=True,
+        )
+        sns.regplot(
+            x=_tpc2[_a],
+            y=_tpc2[_b],
+            ax=axes[1],
+            scatter=False,
+            color=sns.color_palette()[1],
+        )
+        for ax in axes:
+            ax.set(xlabel=_a, ylabel=_b)
+        ct = ct.replace("/", "-")
+        fig.savefig(
+            consts.results_dir
+            / f"signature_enrichment.correlation.{cell_type_label}.selected_{ct}.scatter.svg",
+            **consts.figkws,
+        )
+        plt.close(fig)
+
+    fig, ax = plt.subplots(1, 1, sharex=True, sharey=True, figsize=(3 * 2, 3))
+    _p = corr[(_a, _b)].sort_values()
+    _r = _p.rank()
+    ax.scatter(_r.index, _p)
+    for i in _p.abs().sort_values().index:
+        ax.text(i, _p.loc[i], s=i, ha="right")
+    ax.axhline(0, linestyle="--", color="grey")
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
+    ax.set(
+        title=f"Correlation of {_a} vs\n{_b}",
+        ylabel="Pearson r",
+        xlabel="Cell type (rank)",
+    )
+    fig.savefig(
+        consts.results_dir
+        / f"signature_enrichment.correlation.{cell_type_label}.rank_vs_value.immune.svg",
         **consts.figkws,
     )
 
