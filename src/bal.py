@@ -191,10 +191,11 @@ def phenotyping(a: AnnData):
     a.write(anndata_f.replace_(".h5ad", ".phenotyped.h5ad"))
 
     a = sc.read(anndata_f.replace_(".h5ad", ".phenotyped.h5ad"))
+
     # Plot all cells with cell type labels
-    genes = [g for g in consts.pbmc_markers if g in a.var.index.tolist()]
+    genes = [g for g in consts.pbmc_markers if g in a.raw.var.index.tolist()]
     vmaxes = [
-        np.percentile(a.raw.X[:, a.var.index == g].todense().squeeze(), 95) for g in genes
+        percentile(a.raw.X[:, a.var.index == g].todense().squeeze(), 95) for g in genes
     ]
     fig = sc.pl.umap(
         a,
@@ -311,7 +312,7 @@ def interferon_expression(a):
 
 
 def score_cell_types(a):
-    import matplotlib
+    cell_type_label = "cell_type_label"
 
     signames = list()
     for msigdb in [True, False]:
@@ -321,27 +322,23 @@ def score_cell_types(a):
         sig_f = consts.results_dir / f"signature_enrichment{sign}.csv"
         if not sig_f.exists():
             sigs = load_gene_signatures(msigdb=msigdb)
+            sigs = list(sigs.keys())
             for sig in sigs:
                 sc.tl.score_genes(a, sigs[sig], use_raw=True, score_name=sig)
             a.obs[sigs].to_csv(sig_f)
         else:
             sigs = load_gene_signatures(msigdb=msigdb)
-            # a.obs = a.obs.join(pd.read_csv(sig_f, index_col=0))
-        signames += list(sigs.keys())
+            sigs = list(sigs.keys())
+            a.obs = a.obs.join(pd.read_csv(sig_f, index_col=0))
+        signames += sigs
 
     # Plot signatures at single-cell (UMAP overlay)
-    signames = [
-        "HALLMARK_INTERFERON_ALPHA_RESPONSE",
-        "COVID-19 related inflammatory genes",
-        "Fibrotic genes",
-    ]
     vmin = 0
-    [np.percentile(a.obs[sig], 0) for sig in signames]
-    vmax = [np.percentile(a.obs[sig], 95) for sig in signames]
+    vmax = [percentile(a.obs[sig], 95) for sig in consts.soi]
     for cmap in ["viridis", "magma", "inferno", "Reds"]:
-        fig = sc.pl.umap(a, color=signames, vmin=vmin, vmax=vmax, show=False, cmap=cmap)[
-            0
-        ].figure
+        fig = sc.pl.umap(
+            a, color=consts.soi, vmin=vmin, vmax=vmax, show=False, cmap=cmap
+        )[0].figure
         rasterize_scanpy(fig)
         fig.savefig(
             consts.results_dir / f"signature_enrichment{sign}.UMAP.all_cells.{cmap}.svg",
@@ -349,7 +346,7 @@ def score_cell_types(a):
         )
 
     _a = a[a.obs["disease"] == "COVID-19"]
-    fig = sc.pl.umap(_a, color=signames, vmin=vmin, vmax=vmax, show=False)[0].figure
+    fig = sc.pl.umap(_a, color=consts.soi, vmin=vmin, vmax=vmax, show=False)[0].figure
     del _a
     rasterize_scanpy(fig)
     fig.savefig(
@@ -357,19 +354,17 @@ def score_cell_types(a):
         **consts.figkws,
     )
 
-    cell_type_label = "cell_type_label"
-
     fig = sc.pl.umap(a, color=cell_type_label, show=False).figure
     rasterize_scanpy(fig)
     fig.savefig(consts.results_dir / "UMAP.cell_types.svg", **consts.figkws)
 
-    means = a.obs.groupby(["disease", cell_type_label])[signames].mean().loc["COVID-19"]
+    means = a.obs.groupby(["disease", cell_type_label])[consts.soi].mean().loc["COVID-19"]
 
     cts = means.index
     fig, axes = plt.subplots(
-        len(signames),
+        len(consts.soi),
         len(cts),
-        figsize=(len(cts), len(signames)),
+        figsize=(len(cts), len(consts.soi)),
         sharey="row",
         sharex=True,
     )
@@ -377,7 +372,7 @@ def score_cell_types(a):
         _ = swarmboxenplot(
             data=a.obs.loc[a.obs[cell_type_label] == ct],
             x="disease",
-            y=signames,
+            y=consts.soi,
             swarm=False,
             boxen=False,
             bar=True,
@@ -387,7 +382,7 @@ def score_cell_types(a):
         axs[0].set(title=ct)
         for ax in axs[1:]:
             ax.set(title="")
-    for ax, sig in zip(axes[:, 0], signames):
+    for ax, sig in zip(axes[:, 0], consts.soi):
         ax.set(ylabel=sig)
     fig.savefig(
         consts.results_dir / f"signature_enrichment.{cell_type_label}.barplot.svg",
@@ -395,7 +390,7 @@ def score_cell_types(a):
     )
 
     # Signature correlation
-    corrs = a.obs.groupby(cell_type_label)[signames].corr()
+    corrs = a.obs.groupby(cell_type_label)[consts.soi].corr()
 
     corr = corrs.reset_index().pivot_table(index=cell_type_label, columns="level_1")
     corr = corr.loc[:, ~(corr == 1).all()]
@@ -408,15 +403,18 @@ def score_cell_types(a):
     )
 
     cts = a.obs[cell_type_label].unique()
+    _a = "HALLMARK_INTERFERON_ALPHA_RESPONSE"
+    _b = "COVID-19 related inflammatory genes"
+
+    a.obs[_a + "_plt"] = a.obs[_a] + abs(a.obs[_a].min())
+    a.obs[_b + "_plt"] = a.obs[_b] + abs(a.obs[_b].min())
     for ct in cts:
-        _a = "HALLMARK_INTERFERON_ALPHA_RESPONSE"
-        _b = "COVID-19 related inflammatory genes"
         fig, axes = plt.subplots(1, 2, sharex=True, sharey=True, figsize=(3 * 2, 3))
         _tpc1 = a.obs.loc[
-            (a.obs[cell_type_label] == ct) & (a.obs["disease"] == "Control")
+            (a.obs[cell_type_label] == ct) & (a.obs["disease_severity"] == "Control")
         ]
         _tpc2 = a.obs.loc[
-            (a.obs[cell_type_label] == ct) & (a.obs["disease"] != "Control")
+            (a.obs[cell_type_label] == ct) & (a.obs["disease_severity"] == "Severe")
         ]
         if _tpc1.empty or _tpc2.empty:
             continue
@@ -424,41 +422,39 @@ def score_cell_types(a):
         _tpc1 = _tpc1.sample(n=n)
         _tpc2 = _tpc2.sample(n=n)
 
-        _tpc1[[_a, _b]] += 0.5
-        _tpc2[[_a, _b]] += 0.5
-        axes[0].loglog()
-        axes[1].loglog()
-        r1 = pg.corr(_tpc1[_a], _tpc1[_b]).squeeze()
+        _tpc1[[_a + "_plt", _b + "_plt"]] += 0.5
+        _tpc2[[_a + "_plt", _b + "_plt"]] += 0.5
+        r1 = pg.corr(_tpc1[_a + "_plt"], _tpc1[_b + "_plt"]).squeeze()
         axes[0].set(title=f"r = {r1['r']:.3f}; p = {r1['p-val']:.2e}")
-        r2 = pg.corr(_tpc2[_a], _tpc2[_b]).squeeze()
+        r2 = pg.corr(_tpc2[_a + "_plt"], _tpc2[_b + "_plt"]).squeeze()
         axes[1].set(title=f"r = {r2['r']:.3f}; p = {r2['p-val']:.2e}")
 
         axes[0].scatter(
-            _tpc1[_a],
-            _tpc1[_b],
+            _tpc1[_a + "_plt"],
+            _tpc1[_b + "_plt"],
             alpha=0.2,
-            s=5,
+            s=2,
             color=sns.color_palette()[0],
             rasterized=True,
         )
         sns.regplot(
-            x=_tpc1[_a],
-            y=_tpc1[_b],
+            x=_tpc1[_a + "_plt"],
+            y=_tpc1[_b + "_plt"],
             ax=axes[0],
             scatter=False,
             color=sns.color_palette()[0],
         )
         axes[1].scatter(
-            _tpc2[_a],
-            _tpc2[_b],
+            _tpc2[_a + "_plt"],
+            _tpc2[_b + "_plt"],
             alpha=0.2,
-            s=5,
+            s=2,
             color=sns.color_palette()[1],
             rasterized=True,
         )
         sns.regplot(
-            x=_tpc2[_a],
-            y=_tpc2[_b],
+            x=_tpc2[_a + "_plt"],
+            y=_tpc2[_b + "_plt"],
             ax=axes[1],
             scatter=False,
             color=sns.color_palette()[1],
@@ -469,6 +465,17 @@ def score_cell_types(a):
         fig.savefig(
             consts.results_dir
             / f"signature_enrichment.correlation.{cell_type_label}.selected_{ct}.scatter.svg",
+            **consts.figkws,
+        )
+        plt.close(fig)
+
+        axes[0].loglog()
+        axes[1].loglog()
+        axes[0].set_xlim(left=10)
+        axes[1].set_xlim(left=10)
+        fig.savefig(
+            consts.results_dir
+            / f"signature_enrichment.correlation.{cell_type_label}.selected_{ct}.scatter.log.svg",
             **consts.figkws,
         )
         plt.close(fig)
@@ -508,21 +515,6 @@ class consts:
         "intubation",
         "interval_death_symptoms_onset_days",
     ]
-
-    pbmc_markers = [
-        "TPPP3",
-        "KRT18",
-        "CD68",
-        "FCGR3B",
-        "CD1C",
-        "CLEC4C",
-        "CLEC9A",
-        "TPSB2",
-        "CD3D",
-        "KLRD1",
-        "MS4A1",
-        "IGHG4",
-    ]
     pbmc_markers = [
         # "TPPP3",
         # "KRT18",
@@ -531,11 +523,11 @@ class consts:
         "CD4",
         "NKG7",
         "CD68",
-        "FCGR3B",
+        # "FCGR3B",
         "CD1C",
         "CLEC4C",
         # "CLEC9A",
-        "TPSB2",
+        # "TPSB2",
         "KLRD1",
         "MS4A1",
         "IGHG4",
@@ -556,12 +548,26 @@ class consts:
             "IRF7",
         ],
     }
+    soi = [
+        "HALLMARK_INTERFERON_ALPHA_RESPONSE",
+        "COVID-19 related inflammatory genes",
+        "Fibrotic genes",
+    ]
     figkws = dict(bbox_inches="tight", dpi=300)
 
 
 from functools import partial
 
 clustermap = partial(clustermap, dendrogram_ratio=0.1)
+
+
+def percentile(x, i):
+    import numpy
+
+    try:
+        return numpy.percentile(x, i)
+    except IndexError:
+        return 0
 
 
 if __name__ == "__main__" and "get_ipython" not in locals():
