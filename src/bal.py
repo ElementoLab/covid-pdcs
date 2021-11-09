@@ -17,7 +17,9 @@ from src.utils import rasterize_scanpy, load_gene_signatures
 
 
 # TODO:
-# # - [ ] XXX
+# # - [x] phenotype
+# # - [x] quantify signatures
+# # - [ ] correlate signatures
 
 
 def main():
@@ -27,17 +29,26 @@ def main():
     score_cell_types(a)
 
 
-def get_anndata() -> AnnData:
+def get_anndata(data_type: str = "raw") -> AnnData:
     import tempfile
 
     import requests
     import tarfile
 
     _dir = (consts.data_dir / "liao_nat_med_2020").mkdir()
-    anndata_f = _dir / "anndata.h5ad"
+    if data_type == "raw":
+        anndata_f = _dir / "anndata.h5ad"
+    elif data_type == "processed":
+        anndata_f = _dir / "anndata.h5ad"
+        anndata_f = anndata_f.replace_(".h5ad", ".processed.h5ad")
+    elif data_type == "phenotyped":
+        anndata_f = _dir / "anndata.h5ad"
+        anndata_f = anndata_f.replace_(".h5ad", ".phenotyped.h5ad")
 
     if anndata_f.exists():
         return sc.read(anndata_f)
+    if data_type != "raw":
+        raise FileNotFoundError("Processed data file does not exist.")
 
     url = "https://www.ncbi.nlm.nih.gov/geo/download/?acc=GSE145926&format=file"
     req = requests.get(url)
@@ -87,13 +98,17 @@ def processing(a: AnnData):
     sc.pp.filter_cells(a, min_counts=1000)
     sc.pp.filter_cells(a, min_genes=200)
     sc.pp.filter_cells(a, max_genes=6000)
-    # mito_gene_names = sc.queries.mitochondrial_genes("hsapiens")
-    a.var["mithochondrial_gene"] = a.var.index.str.startswith("MT-")
+    mito_gene_names = sc.queries.mitochondrial_genes("hsapiens").squeeze()
+    a.var["mithochondrial_gene"] = a.var.index.isin(mito_gene_names)
     sc.pp.calculate_qc_metrics(
         a, qc_vars=["mithochondrial_gene"], percent_top=None, log1p=False, inplace=True
     )
-    # sc.pl.violin(a, ['n_genes_by_counts', 'total_counts', 'pct_counts_mithochondrial_gene'],
-    #          jitter=0.4, multi_panel=True)
+    sc.pl.violin(
+        a,
+        ["n_genes_by_counts", "total_counts", "pct_counts_mithochondrial_gene"],
+        jitter=0.4,
+        multi_panel=True,
+    )
     a = a[a.obs["pct_counts_mithochondrial_gene"] < 10.0]
 
     sc.pp.filter_genes(a, min_cells=a.shape[0] * 0.01)
@@ -101,37 +116,53 @@ def processing(a: AnnData):
     # filter based on MT/Ribosomal genes
     sc.pp.log1p(a)
     sc.pp.highly_variable_genes(a, flavor="seurat")
-    # sc.pl.highly_variable_genes(a)
-
     a.write(anndata_f.replace_(".h5ad", ".processed_pre_regout.h5ad"))
+    # a = sc.read(anndata_f.replace_(".h5ad", ".processed_pre_regout.h5ad"))
 
     a = a[:, a.var["highly_variable"]]
-
     sc.pp.regress_out(a, ["total_counts", "pct_counts_mithochondrial_gene"])
-    sc.pp.scale(a)
+    sc.pp.scale(a, max_value=10)
     sc.pp.pca(a)
+
     sc.external.pp.bbknn(a, batch_key="patient")
+
     sc.tl.umap(a, gamma=25)
-    sc.tl.leiden(a, resolution=0.5)
+    sc.tl.leiden(a, resolution=1.0)
 
     a.write(anndata_f.replace_(".h5ad", ".processed.h5ad"))
+    # a = sc.read(anndata_f.replace_(".h5ad", ".processed.h5ad"))
 
 
 def phenotyping(a: AnnData):
+    _dir = (consts.data_dir / "liao_nat_med_2020").mkdir()
+    anndata_f = _dir / "anndata.h5ad"
+
+    fig = sc.pl.umap(a, color=["leiden"], show=False).figure
+    rasterize_scanpy(fig)
+    fig.savefig(consts.results_dir / "clustering.leiden.svg", **consts.figkws)
+    plt.close(fig)
+
     cell_type_label = {
         0: "Macrophages",
         1: "Macrophages",
         2: "Macrophages",
         3: "Macrophages",
+        4: "Macrophages",
         5: "Macrophages",
-        8: "Macrophages",
-        4: "T",
-        9: "NK",
-        7: "Epithelial",
-        6: "Plasma",
-        10: "Neutrophils",
-        11: "DC",
+        6: "Macrophages",
+        7: "Macrophages",
+        9: "Macrophages",
+        13: "Macrophages",
+        12: "DC/B/Plasma",
+        8: "CD4 T",
+        10: "CD8 T",
+        14: "NK-T",
+        15: "NK",
+        16: "Neutrophils",
+        17: "Plasma",
+        11: "Epithelial",
     }
+
     a.obs["cell_type_label"] = a.obs["leiden"].astype(int).replace(cell_type_label)
 
     # Find pDCs
@@ -139,33 +170,42 @@ def phenotyping(a: AnnData):
     markers += ["CD1C", "CLEC4C", "CLEC9A", "LILRA4"]
     markers = list(set(markers))
 
-    dcs = a[a.obs["cell_type_label"] == "DC", :]
-    sc.tl.leiden(dcs, resolution=0.2, key_added="leiden_dc")
+    sel = a.obs["cell_type_label"].str.contains("DC")
+    dcs = a[sel, :]
+    sc.tl.leiden(dcs, resolution=0.2)
+    dcs.obs["cell_type_label"] = dcs.obs["leiden"].replace(
+        {"0": "DC", "1": "Plasma", "2": "B", "3": "pDC", "4": "DC"}
+    )
+    a.obs.loc[sel, "cell_type_label"] = dcs.obs["cell_type_label"]
 
-    pdc_cells = dcs.obs.index[dcs.obs["leiden_dc"] == "2"]
-    a.obs.loc[a.obs.index.isin(pdc_cells), "cell_type_label"] = "pDC"
+    a.write(anndata_f.replace_(".h5ad", ".phenotyped.h5ad"))
 
+    a = sc.read(anndata_f.replace_(".h5ad", ".phenotyped.h5ad"))
     # Plot all cells with cell type labels
+    genes = [g for g in consts.pbmc_markers if g in a.var.index.tolist()]
     vmaxes = [
-        np.percentile(a.raw.X[:, a.var.index == g].todense().squeeze(), 95)
-        for g in consts.pbmc_markers
-        if g in a.var.index.tolist()
+        np.percentile(a.raw.X[:, a.var.index == g].todense().squeeze(), 95) for g in genes
     ]
-    vmaxes += [None] * 4
     fig = sc.pl.umap(
         a,
-        color=consts.pbmc_markers
+        color=genes
         + ["patient", "disease", "disease_severity", "leiden", "cell_type_label"],
         use_raw=True,
-        vmax=vmaxes,
+        vmax=vmaxes + [None] * 4,
         show=False,
     )[0].figure
     rasterize_scanpy(fig)
     fig.savefig(consts.results_dir / "clustering.umap.high_level.svg")
 
     # Plot only DCs
-    fig = sc.pl.umap(dcs, color=markers + ["leiden_dc"], show=False)[0].figure
-    lims = ((9.5, 13.2), (-6.8, 1.5))
+    dcs = a[a.obs["cell_type_label"] == "pDC", :]
+
+    markers = consts.pbmc_markers + [y for x in consts.dc_markers.values() for y in x]
+    markers += ["CD1C", "CLEC4C", "CLEC9A", "LILRA4"]
+    markers = list(set(markers))
+
+    fig = sc.pl.umap(dcs, color=markers + ["leiden"], show=False)[0].figure
+    lims = ((9.5, 15), (-6, 0))
     for ax in fig.axes[::2]:
         ax.set(xlim=lims[0], ylim=lims[1])
     rasterize_scanpy(fig)
@@ -216,15 +256,48 @@ def phenotyping(a: AnnData):
     fig.savefig(consts.results_dir / "cell_abundance.disease_severity.swarmboxenplot.svg")
 
     # Clustermap of mean expression of markers
-    markers = consts.pbmc_markers + [y for x in consts.dc_markers.values() for y in x]
-    markers += ["CD1C", "CLEC4C", "CLEC9A", "LILRA4"]
-    markers = list(set(markers))
-
     raw = a.raw.to_adata()
     x = raw[:, markers].to_df().groupby(a.obs["cell_type_label"]).mean()
 
     grid = clustermap(x.T, figsize=(4, 6), cbar_kws=dict(label="Mean expression (log)"))
     grid.fig.savefig(consts.results_dir / "clustering.cell_type_means.svg")
+
+
+def interferon_expression(a):
+    ifngenes = a.raw.var.index[a.raw.var.index.str.startswith("IFN")]
+    vmax = [max(0.1, np.percentile(a.raw[:, g].X.todense(), 99)) for g in ifngenes]
+    fig = sc.pl.umap(a, color=ifngenes, vmax=vmax, show=False)[0].figure
+    rasterize_scanpy(fig)
+    fig.savefig(
+        consts.results_dir / "interferon_expression.umap.svg",
+        **consts.figkws,
+    )
+    plt.close(fig)
+
+    _a = a[a.obs["disease_severity"].isin(["Mild", "Severe"])]
+    mean = _a.raw[:, ifngenes].to_adata().to_df().groupby(_a.obs["cell_type_label"]).sum()
+    mean = mean.loc[:, mean.var() > 0]
+
+    grid = clustermap(
+        np.log1p(mean), config="abs", cbar_kws=dict(label="Expression (log)")
+    )
+    grid.fig.savefig(
+        consts.results_dir / "interferon_expression.mean.clustermap.abs.svg",
+        **consts.figkws,
+    )
+    plt.close(grid.fig)
+    grid = clustermap(
+        mean,
+        config="z",
+        row_linkage=grid.dendrogram_row.linkage,
+        col_linkage=grid.dendrogram_col.linkage,
+        cbar_kws=dict(label="Expression (Z-score)"),
+    )
+    grid.fig.savefig(
+        consts.results_dir / "interferon_expression.mean.clustermap.z.svg",
+        **consts.figkws,
+    )
+    plt.close(grid.fig)
 
 
 def score_cell_types(a):
@@ -338,6 +411,23 @@ class consts:
         "CLEC9A",
         "TPSB2",
         "CD3D",
+        "KLRD1",
+        "MS4A1",
+        "IGHG4",
+    ]
+    pbmc_markers = [
+        # "TPPP3",
+        # "KRT18",
+        "CD3D",
+        "CD8A",
+        "CD4",
+        "NKG7",
+        "CD68",
+        "FCGR3B",
+        "CD1C",
+        "CLEC4C",
+        # "CLEC9A",
+        "TPSB2",
         "KLRD1",
         "MS4A1",
         "IGHG4",
