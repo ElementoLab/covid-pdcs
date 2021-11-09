@@ -132,7 +132,15 @@ def processing(a: AnnData):
     sc.tl.leiden(a, resolution=1.0)
 
     a.write(anndata_f.replace_(".h5ad", ".processed.h5ad"))
-    # a = sc.read(anndata_f.replace_(".h5ad", ".processed.h5ad"))
+
+    # sc.external.pp.harmony_integrate(a, key="patient")
+    # sc.pp.neighbors(a, use_rep='X_pca_harmony')
+    # sc.tl.umap(a)
+
+    # fig = sc.pl.umap(a, color=['cell_type_label', 'patient', 'disease_severity'], show=False)[0].figure
+    # rasterize_scanpy(fig)
+    # fig.savefig(consts.results_dir / "clustering.cell_type_label.on_harmony.svg", **consts.figkws)
+    # plt.close(fig)
 
 
 def phenotyping(a: AnnData):
@@ -386,6 +394,7 @@ def score_cell_types(a):
         **consts.figkws,
     )
 
+    # Signature correlation
     corrs = a.obs.groupby(cell_type_label)[signames].corr()
 
     corr = corrs.reset_index().pivot_table(index=cell_type_label, columns="level_1")
