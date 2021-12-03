@@ -29,7 +29,6 @@ IL12B,CRI,COVID-19 related inflammatory genes
 TNF,CRI,COVID-19 related inflammatory genes
 IL6,CRI,COVID-19 related inflammatory genes
 IL7,CRI,COVID-19 related inflammatory genes
-IFNB1,CRI,COVID-19 related inflammatory genes
 CTSD,CRI,COVID-19 related inflammatory genes
 IL18,CRI,COVID-19 related inflammatory genes
 IL23A,CRI,COVID-19 related inflammatory genes
@@ -39,7 +38,6 @@ CCL5,CRI,COVID-19 related inflammatory genes
 CCL15,CRI,COVID-19 related inflammatory genes
 CCL3,CRI,COVID-19 related inflammatory genes
 CCL4,CRI,COVID-19 related inflammatory genes
-IFNL1,CRI,COVID-19 related inflammatory genes
 PRKCE,FG,Fibrotic genes
 RHOH,FG,Fibrotic genes
 EDN1,FG,Fibrotic genes

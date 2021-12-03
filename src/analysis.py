@@ -4,16 +4,14 @@
 Analysis of scRNA-seq data in light of pDC action in COVID-19.
 """
 
-import sys
-import typing as tp
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from anndata import AnnData
 import scanpy as sc
-from seaborn_extensions import clustermap
+import pingouin as pg
+from seaborn_extensions import clustermap, swarmboxenplot
 
 from src.types import Path
 from src.utils import rasterize_scanpy, load_gene_signatures
@@ -64,17 +62,16 @@ def load_adata() -> AnnData:
     return a
 
 
-def load_delorey_adata():
-    b = sc.read("data/scrna/lung.h5ad")
-    # df = (
-    #     pd.read_csv("data/scrna/lung.scp.metadata.txt", sep="\t", skiprows=0)
-    #     .drop(0)
-    #     .convert_dtypes()
-    # )
-    return b
-
-    sc.pl.umap(b, color="SubCluster")
-    # Where are the promissed pDCs from Fig 2a and ED2i???
+# def load_delorey_adata():
+#     b = sc.read("data/scrna/lung.h5ad")
+#     # df = (
+#     #     pd.read_csv("data/scrna/lung.scp.metadata.txt", sep="\t", skiprows=0)
+#     #     .drop(0)
+#     #     .convert_dtypes()
+#     # )
+#     return b
+#     sc.pl.umap(b, color="SubCluster")
+#     # Where are the promissed pDCs from Fig 2a and ED2i???
 
 
 def cohort_structure(a: AnnData) -> None:
@@ -128,6 +125,26 @@ def interferon_expression(a):
     plt.close(grid.fig)
 
 
+def msigdb_overlap():
+
+    # MSigDB overlap
+    gsl = open("h.all.v7.4.symbols.gmt").readlines()
+    gsl = {x.split("\t")[0]: set(x.strip().split("\t")[2:]) for x in gsl}
+    over = {
+        (a_, b_): len(gsl[a_].intersection(gsl[b_])) / len(gsl[a_].union(gsl[b_]))
+        for a_ in gsl
+        for b_ in gsl
+    }
+
+    s = (
+        pd.Series(over)
+        .reset_index()
+        .pivot_table(index="level_0", columns="level_1", values=0)
+    )
+
+    sns.heatmap(s, xticklabels=True, yticklabels=True)
+
+
 def find_pDCs(a: AnnData) -> None:
     markers = sorted(set(y for x in consts.dc_markers.values() for y in x))
     marker_origin = pd.Series(
@@ -156,8 +173,9 @@ def find_pDCs(a: AnnData) -> None:
     sc.write(consts.results_dir / "DCs.h5ad", a2)
 
     pdc_file = consts.metadata_dir / "pDC_identity.txt"
-    with open(pdc_file, "w") as handle:
-        handle.write("\n".join(a2.obs.index[a2.obs["DC_cluster"] == "4"].tolist()))
+    if not pdc_file.exists():
+        with open(pdc_file, "w") as handle:
+            handle.write("\n".join(a2.obs.index[a2.obs["DC_cluster"] == "4"].tolist()))
 
     # # Visualize clustering
     fig = sc.pl.umap(a2, color="DC_cluster", show=False).figure
@@ -187,6 +205,16 @@ def find_pDCs(a: AnnData) -> None:
         _res.append(res.assign(cluster=cluster))
     res = pd.concat(_res)
     res.to_csv(consts.results_dir / "DC_clustering.diff_expression.csv")
+
+    res2 = res.query("pvals_adj < 0.01")
+    res2["cluster"] = res2["cluster"].astype(int) + 1
+    res2.to_excel(consts.results_dir / "DC_clustering.diff_expression.xlsx", index=False)
+
+    # Show where IL3RA is
+    p = res.query("cluster == '4'").sort_values("scores", ascending=False)
+    p.head(20).to_csv("reviewer_table.csv")
+
+    # coverage in pDCs
 
     # Top significant
     resp = res.pivot_table(index="names", columns="cluster", values="scores")
@@ -282,7 +310,6 @@ def find_pDCs(a: AnnData) -> None:
     plt.close(fig)
     del _a2
 
-    # from seaborn_extensions import swarmboxenplot
     # fig, stats = swarmboxenplot(data=a2.obs, x='DC_cluster', y='interval_death_symptoms_onset_days')
 
     # Measure signatures on DCs
@@ -311,23 +338,74 @@ def find_pDCs(a: AnnData) -> None:
     fig = sc.pl.umap(a, color=ifngenes, vmax=vmax, show=False)[0].figure
 
 
-def score_cell_types(a, msigdb: bool = False):
+def compare_sig_diffs():
+    n = load_adata()
+    sigs = load_gene_signatures(msigdb=False)
+    for sig in sigs:
+        sc.tl.score_genes(n, sigs[sig], use_raw=True, score_name=sig)
+
+    o = load_adata()
+    sigs["COVID-19 related inflammatory genes"] += ["IFNB1", "IFNL1"]
+    for sig in sigs:
+        sc.tl.score_genes(o, sigs[sig], use_raw=True, score_name=sig)
+
+    fig, axes = plt.subplots(1, 3, figsize=(4 * 3.3, 3), sharex=True, sharey=True)
+    fig.suptitle(
+        "Effect of removal of IFNB1 and IFNL1 from 'COVID-19 inflammation' signature."
+    )
+    sig = "COVID-19 related inflammatory genes"
+    res = pg.corr(o.obs[sig].values, n.obs[sig].values)
+
+    axes[0].scatter(
+        o.obs[sig].values,
+        n.obs[sig].values,
+        c="grey",
+        alpha=0.8,
+        s=2,
+        rasterized=True,
+    )
+    axes[0].set(title="All cells", ylabel="After removal")
+    group_colors = sns.color_palette("tab10")
+    for ax, group, c in zip(axes[1:], n.obs["group"].cat.categories[::-1], group_colors):
+        sel = n.obs["group"] == group
+        ax.scatter(
+            o.obs.loc[sel, sig].values,
+            n.obs.loc[sel, sig].values,
+            c=c,
+            alpha=0.8,
+            s=2,
+            rasterized=True,
+        )
+        ax.set(title=group)
+        pg.corr(o.obs.loc[sel, sig].values, n.obs.loc[sel, sig].values)
+    v = n.obs[sig].max()
+    axes[2].set_xlabel("Before removal")
+    for ax in axes:
+        ax.plot((0, v), (0, v), linestyle="--", color="grey", alpha=0.5, zorder=-999)
+    fig.savefig(
+        consts.results_dir / "reviewer_figure.sig_genes_comparison.scatter.svg",
+        **consts.figkws,
+    )
+
+
+def score_cell_types(a):
     import matplotlib
 
-    sign = ".MSigDB" if msigdb else ""
+    for msigdb in [True, False]:
+        sign = ".MSigDB" if msigdb else ""
 
-    # Get signature scores
-    sig_f = consts.results_dir / f"signature_enrichment{sign}.csv"
-    if not sig_f.exists():
-        sigs = load_gene_signatures(msigdb=msigdb)
-        signames = list(sigs.keys())
-        for sig in sigs:
-            sc.tl.score_genes(a, sigs[sig], use_raw=True, score_name=sig)
-        a.obs[signames].to_csv(sig_f)
-    else:
-        sigs = load_gene_signatures(msigdb=msigdb)
-        signames = list(sigs.keys())
-        a.obs = a.obs.join(pd.read_csv(sig_f, index_col=0))
+        # Get signature scores
+        sig_f = consts.results_dir / f"signature_enrichment{sign}.csv"
+        if not sig_f.exists():
+            sigs = load_gene_signatures(msigdb=msigdb)
+            signames = list(sigs.keys())
+            for sig in sigs:
+                sc.tl.score_genes(a, sigs[sig], use_raw=True, score_name=sig)
+            a.obs[signames].to_csv(sig_f)
+        else:
+            sigs = load_gene_signatures(msigdb=msigdb)
+            signames = list(sigs.keys())
+            a.obs = a.obs.join(pd.read_csv(sig_f, index_col=0))
 
     # Plot signatures at single-cell (UMAP overlay)
     signames = [
@@ -335,14 +413,18 @@ def score_cell_types(a, msigdb: bool = False):
         "COVID-19 related inflammatory genes",
         "Fibrotic genes",
     ]
-    vmin = [np.percentile(a.obs[sig], 5) for sig in sigs]
-    vmax = [np.percentile(a.obs[sig], 95) for sig in sigs]
-    fig = sc.pl.umap(a, color=sigs, vmin=vmin, vmax=vmax, show=False)[0].figure
-    rasterize_scanpy(fig)
-    fig.savefig(
-        consts.results_dir / f"signature_enrichment{sign}.UMAP.all_cells.svg",
-        **consts.figkws,
-    )
+    vmin = 0
+    [np.percentile(a.obs[sig], 0) for sig in signames]
+    vmax = [np.percentile(a.obs[sig], 95) for sig in signames]
+    for cmap in ["viridis", "magma", "inferno", "Reds"]:
+        fig = sc.pl.umap(a, color=signames, vmin=vmin, vmax=vmax, show=False, cmap=cmap)[
+            0
+        ].figure
+        rasterize_scanpy(fig)
+        fig.savefig(
+            consts.results_dir / f"signature_enrichment{sign}.UMAP.all_cells.{cmap}.svg",
+            **consts.figkws,
+        )
 
     _a = a[a.obs["group"] == "COVID-19"]
     fig = sc.pl.umap(_a, color=signames, vmin=vmin, vmax=vmax, show=False)[0].figure
@@ -353,8 +435,6 @@ def score_cell_types(a, msigdb: bool = False):
         **consts.figkws,
     )
 
-    cell_type_label = "cell_type_main"
-    cell_type_label = "cell_type_fine"
     cell_type_label = "cell_type_intermediate"
     pdc_file = consts.metadata_dir / "pDC_identity.txt"
     pdcs = pdc_file.read_text().split("\n")
@@ -366,77 +446,94 @@ def score_cell_types(a, msigdb: bool = False):
         a.obs[cell_type_label].cat.categories.sort_values()
     )
 
+    a.obs.groupby(cell_type_label)["nCount_RNA"].mean()
+    counts = (
+        a.obs.groupby(["patient", cell_type_label])
+        .size()
+        .reset_index()
+        .pivot_table(index=cell_type_label, columns="patient", values=0)
+    )
+    counts.to_csv("cell_coverage.csv")
+
     fig = sc.pl.umap(a, color=cell_type_label, show=False).figure
     rasterize_scanpy(fig)
-    fig.savefig(consts.results_dir / f"UMAP.cell_types.svg", **consts.figkws)
+    fig.savefig(consts.results_dir / "UMAP.cell_types.svg", **consts.figkws)
 
-    immune_cell_types = a.obs.loc[
-        a.obs["immune_status"] == "Immune", cell_type_label
-    ].drop_duplicates()
-    myeloid_cell_types = immune_cell_types[
-        immune_cell_types.str.contains("acrophage|onocyte|lasmacytoid|endritic")
-    ]
-    fig = sc.pl.umap(
-        a, color=cell_type_label, show=False, groups=myeloid_cell_types.tolist()
-    ).figure
-    rasterize_scanpy(fig)
-    fig.savefig(consts.results_dir / f"UMAP.cell_types.myeloid.svg", **consts.figkws)
+    # Figure 3G
+    cts = a.obs[cell_type_label].cat.categories
+    a.obs["group"] = pd.Categorical(
+        a.obs["group"], ordered=True, categories=["Control", "COVID-19"]
+    )
 
-    norm = matplotlib.colors.Normalize(vmin=-0.3, vmax=0.3)
-    means = a.obs.groupby(["group", cell_type_label])[signames].mean().loc["COVID-19"]
+    # Min max scale
+    p = a.obs[signames]
+    ref = p.groupby(a.obs[cell_type_label]).mean()
+    p = ((p - ref.min()) / (ref.max() - ref.min())).join(
+        a.obs[["group", cell_type_label]]
+    )
 
-    fig, axes = plt.subplots(1, len(signames), figsize=(len(signames) * 7, 3.5))
-    for ax, c in zip(axes, means):
-        m = means[c].sort_values(ascending=False)
-        ax.bar(m.index.tolist(), m, color=plt.get_cmap("RdBu_r")(norm(m)))
-        ax.set_xticklabels(m.index.tolist(), rotation=90)
-        ax.axhline(0, linestyle="--", color="grey")
-        ax.set(ylabel=c)
+    fig, axes = plt.subplots(3, len(cts), figsize=(1 * len(cts), 2 * 3), sharey="row")
+    for ct, axs in zip(cts, axes.T):
+        swarmboxenplot(
+            data=p.loc[p[cell_type_label] == ct],
+            x="group",
+            y=signames,
+            swarm=False,
+            boxen=False,
+            bar=True,
+            ax=axs,
+            test=False,
+        )
+        axs[0].set(title=ct)
+        for ax in axs[1:]:
+            ax.set(title="")
+        for ax in axs:
+            ax.set(xticklabels=[])
     fig.savefig(
-        consts.results_dir
-        / f"signature_enrichment.rank_vs_value.{cell_type_label}.COVID-19_only.svg",
+        consts.results_dir / f"signature_enrichment.{cell_type_label}.barplot.svg",
         **consts.figkws,
     )
 
-    grid = clustermap(means[signames], config="z")
-    grid = clustermap(
-        means[signames], config="abs", figsize=(5, 10), metric="correlation"
+    _stats = list()
+    for ct in cts:
+        _stats += [
+            swarmboxenplot(
+                data=p.loc[p[cell_type_label] == ct],
+                x="group",
+                y=signames,
+                swarm=False,
+                boxen=False,
+                bar=True,
+                ax=axs,
+                test=True,
+            ).assign(cell_type=ct)
+        ]
+    stats = pd.concat(_stats)
+    stats["p-cor"] = pg.multicomp(stats["p-unc"].values)[1]
+    stats.to_csv(
+        consts.results_dir / f"signature_enrichment.{cell_type_label}.test.csv",
+        index=False,
     )
 
-    p = a.obs.groupby([cell_type_label, "group"])[signames].mean()
-    grid = clustermap(
-        p.loc[myeloid_cell_types, signames],
-        row_cluster=False,
-        config="abs",
-        figsize=(4, 5),
-        metric="correlation",
-        center=0,
-        cmap="RdBu_r",
-        row_colors=p.index.to_frame()["group"],
-        standard_scale=True,
+    fig, ax = plt.subplots(figsize=(8, 1))
+    sns.heatmap(
+        p.groupby([cell_type_label, "group"])[signames].mean().T,
+        cmap="Reds",
+        ax=ax,
+        vmin=0,
+        vmax=1,
     )
-    grid.fig.savefig(
-        consts.results_dir / f"signature_enrichment.heatmap.{cell_type_label}.both.svg",
+    fig.savefig(
+        consts.results_dir / f"signature_enrichment.{cell_type_label}.heatmap.svg",
         **consts.figkws,
     )
 
-    p = a.obs.groupby(["group", cell_type_label])[signames].mean()
-    pdiff = p.loc["COVID-19"] - p.loc["Control"]
-    grid = clustermap(
-        pdiff[signames],
-        config="abs",
-        figsize=(5, 10),
-        metric="correlation",
-        center=0,
-        cmap="RdBu_r",
-    )
-
+    # Figure 3I
     # Correlate signatures per cell type
     fig, axes = plt.subplots(1, 2, sharex=True, sharey=True)
     axes[0].scatter(a.obs[signames[-1]], a.obs[signames[0]], s=2, alpha=0.2)
     axes[1].scatter(a.obs[signames[-1]], a.obs[signames[1]], s=2, alpha=0.2)
 
-    # a.obs[signames].corr()
     corrs = a.obs.groupby(cell_type_label)[signames].corr()
 
     # grid = clustermap(corrs)
@@ -528,391 +625,80 @@ def score_cell_types(a, msigdb: bool = False):
         **consts.figkws,
     )
 
-    # _a = a[(a.obs["group"] == "COVID-19") & (a.obs["immune_status"] == "Immune")]
-    # for sig in sigs:
-    #     sc.pl.heatmap(
-    #         _a,
-    #         sigs[sig],
-    #         groupby=["group", cell_type_label],
-    #         standard_scale=True,
-    #         vmax=1,
-    #     )
-
-    # Group signatures by cell type
-    oprefix = consts.results_dir / f"signature_enrichment{sign}.{cell_type_label}."
-
-    # Observe signature enrichment per cell type
-    a.obs["group"] = a.obs["group"].cat.reorder_categories(
-        ["Control", "COVID-19"], ordered=True
-    )
-    p = a.obs.groupby([cell_type_label, "group"])[signames].mean()
-    grid = clustermap(
-        p,
-        row_cluster=False,
-        cmap="RdBu_r",
-        center=0,
-        vmin=-0.2,
-        vmax=0.2,
-        cbar_kws=dict(label="Signature enrichment"),
-    )
-    grid.savefig(oprefix + "svg", **consts.figkws)
-
-    _p = a.obs.groupby(["group", cell_type_label])[signames].mean()
-    pdiff = _p.loc["COVID-19"] - _p.loc["Control"]
-    paths = pdiff.mean().sort_values().tail(15).index
-
-    grid = clustermap(
-        p[paths],
-        row_cluster=False,
-        cmap="RdBu_r",
-        center=0,
-        vmin=-0.2,
-        vmax=0.2,
-        cbar_kws=dict(label="Signature enrichment"),
-        figsize=(5, 8),
-        row_colors=p.index.to_frame()[["group"]],
-    )
-    grid.savefig(oprefix + "selected_variable.svg", **consts.figkws)
-
-    grid = clustermap(
-        p[paths],
-        row_cluster=False,
-        cmap="RdBu_r",
-        center=0,
-        # vmin=-0.2, vmax=0.2,
-        cbar_kws=dict(label="Signature enrichment"),
-        figsize=(5, 8),
-        row_colors=p.index.to_frame()[["group"]],
-        standard_scale=1,
-    )
-    grid.savefig(oprefix + "selected_variable.scaled.svg", **consts.figkws)
-
-    grid = clustermap(
-        p.loc[immune_cell_types, paths].sort_index(),
-        row_cluster=False,
-        cmap="RdBu_r",
-        center=0,
-        vmin=-0.2,
-        vmax=0.2,
-        cbar_kws=dict(label="Signature enrichment"),
-        figsize=(5, 7),
-        row_colors=p.index.to_frame()[["group"]],
-    )
-    grid.savefig(oprefix + "selected_variable.immune_only.svg", **consts.figkws)
-
-    grid = clustermap(
-        p.loc[immune_cell_types, paths].sort_index(),
-        row_cluster=False,
-        cmap="RdBu_r",
-        center=0,
-        # vmin=-0.2, vmax=0.2,
-        cbar_kws=dict(label="Signature enrichment"),
-        figsize=(5, 7),
-        row_colors=p.index.to_frame()[["group"]],
-        standard_scale=1,
-    )
-    grid.savefig(oprefix + "selected_variable.immune_only.scaled.svg", **consts.figkws)
-
-    grid = clustermap(p, row_cluster=False, config="z")
-    grid.savefig(oprefix + "z.svg", **consts.figkws)
-
-    p = a.obs.groupby(["group", cell_type_label])[signames].mean()
-    for group in ["Control", "COVID-19"]:
-        grid = clustermap(p.loc[group])
-        grid.savefig(oprefix + f"per_disease_{group}.svg", **consts.figkws)
-
-        from imc.graphics import get_grid_dims
-
-        fig = get_grid_dims(signames, return_fig=True)
-        for i, sig in enumerate(signames):
-            sns.barplot(
-                x=p.loc[group, sig],
-                y=p.loc[group, sig].index,
-                ax=fig.axes[i],
-                orient="horiz",
-            )
-        fig.tight_layout()
-        fig.savefig(oprefix + f"per_disease_{group}.barplot.svg", **consts.figkws)
-
-    # fig, axes = plt.subplots(1, 3)
-    # for i, sig in enumerate(signames):
-    #     for j, group in enumerate(["Control", "COVID-19"]):
-    #         sns.histplot(
-    #             a.obs.query(f"group == '{group}'")[sig],
-    #             ax=axes[i],
-    #             label=group,
-    #             color=sns.color_palette()[j],
-    #             stat='percent'
-    #         )
-
-    fig, axes = plt.subplots(1, 3, figsize=(3 * 4, 4))
-    for i, sig in enumerate(signames):
-        for j, group in enumerate(["Control", "COVID-19"]):
-            sns.histplot(
-                p.loc[group, sig],
-                ax=axes[i],
-                label=group,
-                color=sns.color_palette()[j],
-                stat="percent",
-            )
-        axes[i].set_title(sig)
-    fig.savefig(oprefix + "per_disease.grouped_cell_type.histplot.svg", **consts.figkws)
-
-    p = a.obs.groupby(["group", cell_type_label])[signames].mean()
-    pdiff = p.loc["COVID-19"] - p.loc["Control"]
-    pz = ((p.T - p.mean(1)) / p.std(1)).T
-    pdiff = pz.loc["COVID-19"] - pz.loc["Control"]
-
-    _a = ((p.loc["COVID-19"].T - p.loc["COVID-19"].mean(1)) / p.loc["COVID-19"].std(1)).T
-    _b = ((p.loc["Control"].T - p.loc["Control"].mean(1)) / p.loc["Control"].std(1)).T
-    pdiff = _a - _b
-    grid = clustermap(
-        pdiff,
-        center=0,
-        cmap="RdBu_r",
-        metric="correlation",
-        cbar_kws=dict(label="Log-fold change"),
-        row_cluster=False,
-        # vmin=-5,
-        # vmax=5,
-    )
-    grid.savefig(oprefix + "fold_change.clustermap.svg", **consts.figkws)
-
-    ctoi = "Plasmacytoid dendritic cells"
-    paths = pdiff.loc[ctoi].abs().sort_values().tail(8).index
-    c = a.obs.loc[a.obs[cell_type_label] == ctoi]
-    c["group"] = pd.Categorical(
-        c["group"], categories=["Control", "COVID-19"], ordered=True
-    )
-    fig, _ = swarmboxenplot(data=c, x="group", y=paths)
-    fig.savefig(oprefix + "fold_change.top_vars.swarmboxenplot.svg", **consts.figkws)
-
-    # # Rank vs change plot
-    fig, ax = plt.subplots(figsize=(6, 3))
-    fc = pdiff.loc[ctoi]
-    rank = fc.rank()
-    ax.scatter(rank, fc)
-    for v in rank.sort_values().tail(2).index:
-        ax.text(rank.loc[v], fc.loc[v], s=v, ha="right")
-    for v in rank.sort_values().head(2).index:
-        ax.text(rank.loc[v], fc.loc[v], s=v, ha="left")
-    ax.axhline(0, linestyle="--", color="grey")
-    ax.set(xlabel="Pathway rank", ylabel="Log fold change (COVID-19 / Control)")
-    fig.savefig(oprefix + "fold_change.rank_vs_value.svg", **consts.figkws)
-
-    # # MA plot
-    fig, ax = plt.subplots()
-    mean = p.groupby(level=1).mean().loc[ctoi]
-    fc = pdiff.loc[ctoi]
-    ax.scatter(mean, fc)
-    for v in mean.index:
-        ax.text(mean.loc[v], fc.loc[v], s=v)
-    fig.savefig(oprefix + "fold_change.rank_vs_value.svg", **consts.figkws)
-
-    # TODO: look at specific gene expression from IFNalpha signature
-    poi = "HALLMARK_INTERFERON_ALPHA_RESPONSE"
-    genes = [g for g in sigs[poi] if g in a.raw.var_names]
-    _a = a[a.obs[cell_type_label].isin([ctoi])]
-    fig = sc.pl.heatmap(
-        _a,
-        var_names=genes,
-        groupby=[cell_type_label, "group"],
-        log=True,
-        show_gene_labels=True,
-        show=False,
-    )["heatmap_ax"].figure
-    fig.savefig(oprefix + "fold_change.signature.heatmap.svg", **consts.figkws)
-
-    # _a = a[a.obs[cell_type_label].isin([ctoi])].raw.to_adata().to_df()[genes]
-    # _a = _a.loc[:, _a.var() > 0]
-    # grid = clustermap(_a, row_colors=a.obs[[cell_type_label, 'group']], config='z')
-
-    # # by timing
-    _a = a[a.obs["group"] == "COVID-19"]
-    p = _a.obs.groupby(["timing_broad", cell_type_label])[signames].mean()
-    grid = clustermap(p)
-    grid.savefig(oprefix + "by_time_broad.clustermap.svg", **consts.figkws)
-
-    kws = dict(
-        center=0,
-        cmap="RdBu_r",
-        metric="correlation",
-        vmin=-0.5,
-        vmax=0.5,
-        row_cluster=False,
-    )
-    pdiff = p.loc["Early"] - p.loc["Late"]
-    grid = clustermap(pdiff, **kws)
-    grid.savefig(oprefix + "by_time_broad.fold_changes.clustermap.svg", **consts.figkws)
-
-    p = _a.obs.groupby(["timing_fine", cell_type_label])[signames].mean()
-    grid = clustermap(p)
-    grid.savefig(oprefix + "by_time_fine.clustermap.svg", **consts.figkws)
-
-    kws = dict(center=0, cmap="RdBu_r", metric="correlation", vmin=-0.5, vmax=0.5)
-    pdiff1 = (p.loc["Very early"] - p.loc["Early"]).rename_axis(
-        index="Very early / Early"
-    )
-    grid = clustermap(pdiff1, **kws, cbar_kws=dict(label="Very early / Early"))
-    grid.savefig(oprefix + "by_time_fine.fold_changes1.clustermap.svg", **consts.figkws)
-    pdiff2 = (p.loc["Early"] - p.loc["Middle"]).rename_axis(index="Early / Middle")
-    grid = clustermap(pdiff2, **kws, cbar_kws=dict(label="Early / Middle"))
-    grid.savefig(oprefix + "by_time_fine.fold_changes2.clustermap.svg", **consts.figkws)
-    pdiff3 = (p.loc["Middle"] - p.loc["Late"]).rename_axis(index="Middle / Late")
-    grid = clustermap(pdiff3, **kws, cbar_kws=dict(label="Middle / Late"))
-    grid.savefig(oprefix + "by_time_fine.fold_changes3.clustermap.svg", **consts.figkws)
-    plt.close("all")
-
-    kws = dict(center=0, cmap="RdBu_r", metric="correlation")
-    for sig in signames:
-        df = pd.DataFrame([pdiff1[sig], pdiff2[sig], pdiff3[sig]]).T
-        df.columns = ["Very early / Early", "Early / Middle", "Middle / Late"]
-        grid = clustermap(
-            df, **kws, cbar_kws=dict(label="Log fold change"), col_cluster=False
-        )
-        grid.savefig(
-            oprefix + f"by_time_fine.{sig}fold_changes.clustermap.svg", **consts.figkws
-        )
-    plt.close("all")
-
-    # Macrophage IFN signature and inflammation
-    immune_cell_types = a.obs.loc[
-        a.obs["immune_status"] == "Immune", cell_type_label
-    ].drop_duplicates()
-    myeloid_cell_types = immune_cell_types[
-        immune_cell_types.str.contains("acrophage|onocyte|lasmacytoid")
-    ]
-
-    p = a.obs.groupby(["group", cell_type_label])[signames].mean().dropna()
-    pdiff = p.loc["COVID-19"] - p.loc["Control"]
-
-    p = a.obs.groupby(["timing_broad", cell_type_label])[signames].mean().dropna()
-    ptime = p.loc["Late"] - p.loc["Early"]
-
-    grid = clustermap(
-        pdiff.loc[myeloid_cell_types],
-        cmap="RdBu_r",
-        center=0,
-        robust=True,
-        metric="correlation",
-        cbar_kws=dict(label="COVID-19 vs Control"),
-    )
-    grid.ax_heatmap.set_yticklabels(grid.ax_heatmap.get_yticklabels(), rotation=0)
-    grid.savefig(
-        oprefix + f"differential_disease_myeloid.clustermap.svg", **consts.figkws
-    )
-    plt.close(grid.fig)
-
-    grid = clustermap(
-        ptime.loc[myeloid_cell_types],
-        cmap="RdBu_r",
-        center=0,
-        robust=True,
-        metric="correlation",
-        cbar_kws=dict(label="Late COVID-19 vs Early COVID-19"),
-    )
-    grid.ax_heatmap.set_yticklabels(grid.ax_heatmap.get_yticklabels(), rotation=0)
-    grid.savefig(oprefix + f"differential_time_myeloid.clustermap.svg", **consts.figkws)
-    plt.close(grid.fig)
-
-    fig, axes = plt.subplots(len(myeloid_cell_types), 2, sharey=False)
-    for ct, axs in zip(myeloid_cell_types, axes):
-        for ax, d in zip(axs, [pdiff.loc[ct], ptime.loc[ct]]):
-            rank = d.rank()
-            ax.scatter(rank, d)
-            for i in d.sort_values().head(3).index:
-                ax.text(rank.loc[i], d.loc[i], s=i, ha="left")
-            for i in d.sort_values().tail(3).index:
-                ax.text(rank.loc[i], d.loc[i], s=i, ha="right")
-            ax.axhline(0, linestyle="--", color="grey")
-        axs[0].set(ylabel=ct)
-    axes[0, 0].set(title="COVID-19 vs Control")
-    axes[0, 1].set(title="Late COVID-19 vs Early COVID-19")
-    fig.savefig(oprefix + f"differential_myeloid.rank_vs_value.svg", **consts.figkws)
-    plt.close(fig)
-
-    grid = clustermap(p.corr())
-
+    # Figure 3H
     pois = [
-        "HALLMARK_INTERFERON_ALPHA_RESPONSE",
-        "COVID-19 related inflammatory genes",
-        "Fibrotic genes",
+        ("HALLMARK_INTERFERON_ALPHA_RESPONSE", "COVID-19 related inflammatory genes"),
+        (
+            "HALLMARK_INTERFERON_ALPHA_RESPONSE",
+            "Fibrotic genes",
+        ),
     ]
     _corrs = list()
     for ct in a.obs[cell_type_label].unique():
-        c = a.obs.loc[a.obs[cell_type_label] == ct, pois].corr()
-        _corrs.append(c.reset_index().melt(id_vars="index").assign(ct=ct))
-
+        for _q, _p in pois:
+            _x = a.obs.loc[a.obs[cell_type_label] == ct]
+            _a, _b = _x.loc[:, _q], _x.loc[:, _p]
+            _r = pg.corr(_a, _b).assign(a=_q, b=_p)
+            _r.index = [ct]
+            _corrs.append(_r)
     corrs = pd.concat(_corrs)
-    c1 = (
-        corrs.loc[(corrs["index"] == pois[0]) & (corrs["variable"] == pois[1])]
-        .set_index("ct")["value"]
-        .sort_values()
-    )
-    c2 = (
-        corrs.loc[(corrs["index"] == pois[0]) & (corrs["variable"] == pois[2])]
-        .set_index("ct")["value"]
-        .sort_values()
-    )
-    c3 = (
-        corrs.loc[(corrs["index"] == pois[1]) & (corrs["variable"] == pois[2])]
-        .set_index("ct")["value"]
-        .sort_values()
-    )
-    call = (
-        c1.to_frame("IFNa -> Inflammation")
-        .join(c2.to_frame("IFNa -> Fibrosis"))
-        .join(c3.to_frame("Inflammation -> Fibrosis"))
-    )
-    call = call.sort_values(call.columns.tolist(), ascending=False)
-    grid = clustermap(call, col_cluster=False, cmap="RdBu_r", center=0)
-    grid = clustermap(
-        call.loc[immune_cell_types], col_cluster=False, cmap="RdBu_r", center=0
-    )
+    corrs["p-cor"] = pg.multicomp(corrs["p-val"].values)[1]
+    c1 = corrs.loc[(corrs["a"] == pois[0][0]) & (corrs["b"] == pois[0][1])][
+        "r"
+    ].sort_values()
+    c2 = corrs.loc[(corrs["a"] == pois[1][0]) & (corrs["b"] == pois[1][1])][
+        "r"
+    ].sort_values()
+    call = c1.to_frame("IFNa -> Inflammation").join(c2.to_frame("IFNa -> Fibrosis"))
+    call = call.loc[immune_cell_types].sort_values(call.columns.tolist(), ascending=False)
 
     fig, axes = plt.subplots(
-        1, len(call.columns), figsize=(len(call.columns) * 7, 3.5), sharey=True
+        1, len(call.columns), figsize=(len(call.columns) * 5, 2.5), sharey=True
     )
     norm = matplotlib.colors.Normalize(vmin=-1, vmax=1)
     for ax, c in zip(axes, call.columns):
         ax.bar(call[c].index, call[c], color=plt.get_cmap("RdBu_r")(norm(call[c])))
         ax.yaxis.tick_right()
         ax.set_xticklabels(call[c].index, rotation=90)
-        ax.axhline(0, linestyle="--", color="grey")
-        ax.set(ylabel=c)
-    fig.savefig(oprefix + f"signature_correlation.barplot.svg", **consts.figkws)
-    plt.close(fig)
-
-    call2 = call.loc[immune_cell_types].sort_values(
-        call.columns.tolist(), ascending=False
-    )
-    fig, axes = plt.subplots(
-        1, len(call2.columns), figsize=(len(call2.columns) * 7, 3.5), sharey=True
-    )
-    norm = matplotlib.colors.Normalize(vmin=-1, vmax=1)
-    for ax, c in zip(axes, call2.columns):
-        ax.bar(call2[c].index, call2[c], color=plt.get_cmap("RdBu_r")(norm(call2[c])))
-        ax.yaxis.tick_right()
-        ax.set_xticklabels(call2[c].index, rotation=90)
         ax.axhline(0, linestyle="--", color="grey")
         ax.set(ylabel=c)
     fig.savefig(
-        oprefix + f"signature_correlation.barplot.immune_only.svg", **consts.figkws
+        oprefix + "signature_correlation.barplot.immune_only.svg", **consts.figkws
     )
     plt.close(fig)
 
-    cts = ["Alveolar macrophages", "Monocyte-derived macrophages", "Monocytes"]
-    call = call.loc[cts].sort_values(call.columns.tolist(), ascending=False)
-    fig, axes = plt.subplots(1, len(call.columns), figsize=(3, 2.5), sharey=True)
-    norm = matplotlib.colors.Normalize(vmin=-1, vmax=1)
-    for ax, c in zip(axes, call.columns):
-        ax.bar(call[c].index, call[c], color=plt.get_cmap("RdBu_r")(norm(call[c])))
-        ax.yaxis.tick_right()
-        ax.set_xticklabels(call[c].index, rotation=90)
-        ax.axhline(0, linestyle="--", color="grey")
-        ax.set(ylabel=c)
-    fig.savefig(oprefix + f"signature_correlation.fine.barplot.svg", **consts.figkws)
-    plt.close(fig)
+
+def percent_infected_marcrophages_imc():
+    positive_file = Path(
+        "~/projects/archive/covid-imc/results/cell_type/gating.positive.pq"
+    )
+    q = pd.read_parquet(positive_file).drop("obj_id", axis=1)
+    macs = q["cluster"].str.contains("Macrophage")
+    mpos = q.loc[macs].groupby(["roi"]).sum()
+    mtotal = q.loc[macs].groupby(["roi"]).size()
+    mperc = (mpos.T / mtotal).T * 100
+
+    # percent infected macrophages
+    mperc.groupby(mperc.index.str.contains("COVID"))["SARSCoV2S1(Eu153)"].mean()
+    # False    0.041761
+    # True     7.824405
+    # Name: SARSCoV2S1(Eu153), dtype: float64
+
+    mpos = q.groupby(["roi", "cluster"]).sum()
+    mtotal = q.groupby(["roi", "cluster"]).size()
+    mperc = (mpos.T / mtotal).T * 100
+    p = mperc.loc[mperc.index.get_level_values(0).str.contains("COVID")].reset_index()
+
+    fig, ax = plt.subplots(figsize=(3, 3))
+    s = p.query("cluster == '10 - Macrophages'")["SARSCoV2S1(Eu153)"]
+    sns.histplot(s, ax=ax, bins=20, stat="percent")
+    ax.axvline(s.mean(), color="brown", linestyle="--")
+    ax.set(
+        xlim=(-10, 110),
+        xlabel="% SARS-CoV-2 Spike+\nmacrophages per image",
+        ylabel=f"% images (n = {s.shape[0]})",
+    )
+    fig.savefig("macrophage_infection.per_image.pdf", bbox_inches="tight", dpi=300)
 
 
 class consts:
@@ -954,6 +740,8 @@ clustermap = partial(clustermap, dendrogram_ratio=0.1)
 
 
 if __name__ == "__main__" and "get_ipython" not in locals():
+    import sys
+
     try:
         sys.exit(main())
     except KeyboardInterrupt:
