@@ -47,12 +47,29 @@ def cohort_structure(a: AnnData) -> None:
         categories=["Healthy", "ICU_Control", "Mild", "Severe"],
         ordered=True,
     )
-
+    a.obs["timepoint"] = pd.Categorical(
+        a.obs["Status"]
+        .str.contains("_Followup")
+        .replace({False: "2-4 months", True: "4-12 months"}),
+        ordered=True,
+    )
+    a.obs["sample_group"] = pd.Categorical(
+        a.obs["Status"],
+        categories=[
+            "Healthy",
+            "ICU_Control",
+            "Mild",
+            "Mild_Followup",
+            "Severe",
+            "Severe_Followup",
+        ],
+        ordered=True,
+    )
     pat_meta = (
         a.obs[consts.pat_vars]
-        .set_index("sample")
         .drop_duplicates()
-        .sort_values(["disease_severity", "Sex", "Age"])
+        .set_index("sample")
+        .sort_values(["sample_group", "disease_severity", "timepoint", "Sex", "Age"])
     )
 
     pat_meta.to_csv(consts.metadata_dir / "josefowicz.cohort_structure.csv")
@@ -67,7 +84,7 @@ def processing(a: AnnData) -> None:
         "cDC1": "Dendritic cell",
         "cDC2": "Dendritic cell",
         "ASDC": "pDC",
-        "Plasmablast": "Plasma cell",
+        "Plasmablast": "B",
     }
     to_remove = ["Doublet", "Platelet", "Eryth", "HSPC", "ILC", "MAIT", "dnT", "gdT"]
     ct = (
@@ -97,13 +114,13 @@ def processing(a: AnnData) -> None:
     fig = sc.pl.umap(
         a,
         color=m
+        + consts.pat_vars
         + [
-            "disease_severity",
             "predicted.celltype.l1",
             "predicted.celltype.l2",
             "cell_type_label",
         ],
-        vmin=[0.0] * len(m) + [None] * 4,
+        vmin=[0.0] * len(m) + [None] * (len(consts.pat_vars) + 3),
         vmax=vmaxes + [None] * 4,
         show=False,
     )[0].figure
@@ -111,33 +128,33 @@ def processing(a: AnnData) -> None:
     fig.savefig(consts.results_dir / "phenotyping.pbmc_markers.umap.svg", **consts.figkws)
     plt.close(fig)
 
-    # Get expression per cell type
-    sc.tl.rank_genes_groups(a, "predicted.celltype.l2", method="t-test_overestim_var")
-    diffres = sc.get.rank_genes_groups_df(a, group=None)
-    diff_genes = (
-        diffres.set_index("names").groupby("group")["scores"].nlargest(5).index.levels[1]
-    )
+    # # Get expression per cell type
+    # sc.tl.rank_genes_groups(a, "predicted.celltype.l2", method="t-test_overestim_var")
+    # diffres = sc.get.rank_genes_groups_df(a, group=None)
+    # diff_genes = (
+    #     diffres.set_index("names").groupby("group")["scores"].nlargest(5).index.levels[1]
+    # )
 
-    ct_counts = a.obs.groupby(a.obs["predicted.celltype.l2"]).size()
-    ct_means = (
-        a.raw[:, diff_genes]
-        .to_adata()
-        .to_df()
-        .groupby(a.obs["predicted.celltype.l2"])
-        .mean()
-    )
+    # ct_counts = a.obs.groupby(a.obs["predicted.celltype.l2"]).size()
+    # ct_means = (
+    #     a.raw[:, diff_genes]
+    #     .to_adata()
+    #     .to_df()
+    #     .groupby(a.obs["predicted.celltype.l2"])
+    #     .mean()
+    # )
 
-    grid = clustermap(
-        ct_means,
-        config="z",
-        figsize=(12, 5),
-        cbar_kws=dict(label="Expression (Z-score)"),
-        row_colors=np.log1p(ct_counts.rename("Cell count (log)")),
-    )
-    grid.fig.savefig(
-        consts.results_dir / "phenotyping.top_5_markers.clustermap.svg", **consts.figkws
-    )
-    plt.close(grid.fig)
+    # grid = clustermap(
+    #     ct_means,
+    #     config="z",
+    #     figsize=(12, 5),
+    #     cbar_kws=dict(label="Expression (Z-score)"),
+    #     row_colors=np.log1p(ct_counts.rename("Cell count (log)")),
+    # )
+    # grid.fig.savefig(
+    #     consts.results_dir / "phenotyping.top_5_markers.clustermap.svg", **consts.figkws
+    # )
+    # plt.close(grid.fig)
 
     # Get cell counts per patient
     counts = (
@@ -151,16 +168,42 @@ def processing(a: AnnData) -> None:
     percentages = (counts.T / counts.sum(1)).T * 100
     pat_meta = (
         a.obs[consts.pat_vars]
-        .set_index("sample")
         .drop_duplicates()
-        .sort_values(["disease_severity", "Sex", "Age"])
+        .set_index("sample")
+        .sort_values(["sample_group", "Sex", "Age"])
     )
 
     fig, stats = swarmboxenplot(
-        data=percentages.join(pat_meta), x="disease_severity", y=counts.columns
+        data=percentages.join(pat_meta), x="sample_group", y=counts.columns
     )
     fig.savefig(
         consts.results_dir / "cell_abundance.by_severity.swarmboxenplot.svg",
+        **consts.figkws,
+    )
+    plt.close(fig)
+
+    counts = (
+        a.obs.groupby("sample")["cell_type_label"]
+        .value_counts()
+        .rename_axis(index=["sample", "cell_type_label"])
+        .rename("count")
+        .reset_index()
+        .pivot_table(index="sample", columns="cell_type_label", values="count")
+    )
+    percentages = (counts.T / counts.sum(1)).T * 100
+    pat_meta = (
+        a.obs[consts.pat_vars]
+        .drop_duplicates()
+        .set_index("sample")
+        .sort_values(["sample_group", "Sex", "Age"])
+    )
+
+    fig, stats = swarmboxenplot(
+        data=percentages.join(pat_meta), x="sample_group", y=counts.columns
+    )
+    fig.savefig(
+        consts.results_dir
+        / "cell_abundance.by_severity.swarmboxenplot.consolidated_cell_types.svg",
         **consts.figkws,
     )
     plt.close(fig)
@@ -228,28 +271,68 @@ def score_cell_types(a):
             a.obs = a.obs.join(pd.read_csv(sig_f, index_col=0))
         signames += sigs
 
-    # Plot signatures agregate by cell type
+    # Plot signatures agregated by cell type
     ctv = "cell_type_label"
 
     sig_means = (
-        a[a.obs[ctv] != "Doublet", :]
-        .obs.groupby(["sample", ctv, "disease_severity"])[signames]
+        a[
+            (a.obs[ctv] != "Doublet")
+            # & (a.obs["nCount_RNA"] > 1000)
+            # & (a.obs["nFeature_RNA"] > 200)
+            ,
+            :,
+        ]
+        .obs.groupby(["sample", ctv, "sample_group"])[signames]
         .mean()
-        .groupby(level=[ctv, "disease_severity"])
+        .groupby(level=[ctv, "sample_group"])
         .mean()
     )
 
+    # # replace non existing with jitter
+    _m = sig_means.isnull().all(1)
+    sig_means.loc[_m] = np.random.random(len(signames)) * 1e-10
+
+    sig_diff = pd.concat(
+        [
+            (
+                sig_means.loc[:, v, :].reset_index(level=1, drop=True)
+                - sig_means.loc[:, "Healthy", :].reset_index(level=1, drop=True)
+            )
+            .assign(sample_group=v)
+            .set_index("sample_group", append=True)
+            for v in a.obs["sample_group"].cat.categories[1:]
+        ]
+    ).sort_index()
+
     grid = clustermap(
-        sig_means.fillna(0).T,
+        sig_diff.T,
         col_cluster=False,
-        col_colors=sig_means.index.to_frame()[["disease_severity"]],
+        col_colors=sig_diff.index.to_frame()[["sample_group"]],
         xticklabels=True,
         cmap="RdBu_r",
         robust=True,
         center=0,
         figsize=(12, 9),
     )
-    grid.ax_heatmap.set_xticks(range(0, sig_means.shape[0], 4))
+    grid.ax_heatmap.set_xticks(range(0, sig_diff.shape[0], 5))
+    grid.ax_heatmap.set_xticklabels(sig_diff.index.levels[0])
+    grid.fig.savefig(
+        consts.results_dir
+        / "signature_enrichment.all_sigs.all_cell_types.clustermap.diff.svg",
+        **consts.figkws,
+    )
+
+    grid = clustermap(
+        sig_means.T,
+        col_cluster=False,
+        col_colors=sig_means.index.to_frame()[["sample_group"]],
+        xticklabels=True,
+        cmap="RdBu_r",
+        robust=True,
+        center=0,
+        figsize=(12, 9),
+    )
+    grid.ax_heatmap.set_xticks(range(0, sig_means.shape[0], 6))
     grid.ax_heatmap.set_xticklabels(sig_means.index.levels[0])
     grid.fig.savefig(
         consts.results_dir
@@ -258,16 +341,16 @@ def score_cell_types(a):
     )
 
     grid = clustermap(
-        sig_means.fillna(0).T.loc[consts.soi],
+        sig_means.T.loc[consts.soi],
         col_cluster=False,
-        col_colors=sig_means.index.to_frame()[["disease_severity"]],
+        col_colors=sig_means.index.to_frame()[["sample_group"]],
         xticklabels=True,
         cmap="RdBu_r",
         robust=True,
         center=0,
         figsize=(12, 3),
     )
-    grid.ax_heatmap.set_xticks(range(0, sig_means.shape[0], 4))
+    grid.ax_heatmap.set_xticks(range(0, sig_means.shape[0], 6))
     grid.ax_heatmap.set_xticklabels(sig_means.index.levels[0])
     grid.fig.savefig(
         consts.results_dir
@@ -276,9 +359,9 @@ def score_cell_types(a):
     )
 
     grid = clustermap(
-        sig_means.fillna(0).T,
+        sig_means.T,
         col_cluster=False,
-        col_colors=sig_means.index.to_frame()[["disease_severity"]],
+        col_colors=sig_means.index.to_frame()[["sample_group"]],
         xticklabels=True,
         cmap="RdBu_r",
         robust=True,
@@ -286,64 +369,11 @@ def score_cell_types(a):
         figsize=(12, 9),
         z_score=0,
     )
-    grid.ax_heatmap.set_xticks(range(0, sig_means.shape[0], 4))
+    grid.ax_heatmap.set_xticks(range(0, sig_means.shape[0], 6))
     grid.ax_heatmap.set_xticklabels(sig_means.index.levels[0])
     grid.fig.savefig(
         consts.results_dir
         / "signature_enrichment.all_sigs.all_cell_types.clustermap.z_score.svg",
-        **consts.figkws,
-    )
-
-    s = sig_means.loc[sig_means.index.get_level_values(1) == "Severe"]
-    s = s.reset_index(level=1, drop=True)
-    h = sig_means.loc[sig_means.index.get_level_values(1) == "Healthy"]
-    h = h.reset_index(level=1, drop=True)
-
-    grid = clustermap(
-        (s - h).T,
-        col_cluster=False,
-        xticklabels=True,
-        cmap="RdBu_r",
-        robust=True,
-        center=0,
-        figsize=(12, 9),
-    )
-    grid.fig.savefig(
-        consts.results_dir
-        / "signature_enrichment.all_sigs.all_cell_types.clustermap.diff.svg",
-        **consts.figkws,
-    )
-
-    grid = clustermap(
-        (s - h).T.loc[consts.soi],
-        col_cluster=False,
-        xticklabels=True,
-        cmap="RdBu_r",
-        robust=True,
-        center=0,
-        figsize=(12, 3),
-    )
-    grid.fig.savefig(
-        consts.results_dir
-        / "signature_enrichment.all_sigs.all_cell_types.clustermap.diff.specific_sigs.svg",
-        **consts.figkws,
-    )
-
-    s = sig_means.loc[sig_means.index.get_level_values(1) == "Severe"].reset_index(
-        level=1, drop=True
-    )
-    grid = clustermap(
-        (s).T,
-        col_cluster=False,
-        xticklabels=True,
-        cmap="RdBu_r",
-        robust=True,
-        center=0,
-        figsize=(12, 9),
-    )
-    grid.fig.savefig(
-        consts.results_dir
-        / "signature_enrichment.all_sigs.all_cell_types.clustermap.severe.svg",
         **consts.figkws,
     )
 
@@ -370,7 +400,8 @@ def score_cell_types(a):
         **consts.figkws,
     )
 
-    cts = a.obs["cell_type_label"].unique()
+    # Plot as barplots
+    cts = sorted(a.obs["cell_type_label"].dropna().unique())
     fig, axes = plt.subplots(
         len(consts.soi),
         len(cts),
@@ -381,21 +412,19 @@ def score_cell_types(a):
     for ct, axs in zip(cts, axes.T):
         _ = swarmboxenplot(
             data=a.obs.loc[a.obs["cell_type_label"] == ct],
-            x="disease_severity",
+            x="sample_group",
             y=consts.soi,
             swarm=False,
             boxen=False,
             bar=True,
             ax=axs,
+            plot_kws=dict(palette=consts.sample_group_colors),
             test=False,
         )
         axs[0].set(title=ct)
         for ax in axs[1:]:
             ax.set(title="")
     for ax in axes.flat:
-        # v = max([max(map(abs, ax.get_xlim())) for ax in axs])
-        # for ax in axs:
-        #     ax.set_ylim((-v, v))
         v = max(map(abs, ax.get_ylim()))
         ax.set_ylim((-v, v))
 
@@ -406,9 +435,59 @@ def score_cell_types(a):
         **consts.figkws,
     )
 
+    diffs = pd.concat(
+        (
+            a.obs.query(f"cell_type_label == '{ct}' & sample_group == '{sg}'")[signames]
+            - sig_means.loc[ct, "Healthy"]
+        )
+        .assign(cell_type_label=ct, sample_group=sg)
+        .set_index(["cell_type_label", "sample_group"])
+        for sg in a.obs["sample_group"].cat.categories[1:]
+        for ct in cts
+    ).sort_index()
+
+    # Add a mock cell with Nan values just so that every cell type has equal columns
+    s = diffs.iloc[-1]
+    s.name = ("pDC", "Severe")
+    s[signames] = np.nan
+    diffs = diffs.append(s)
+
+    fig, axes = plt.subplots(
+        len(consts.soi),
+        len(cts),
+        figsize=(len(cts), len(consts.soi)),
+        sharey="row",
+        sharex=True,
+    )
+    for ct, axs in zip(cts, axes.T):
+        _ = swarmboxenplot(
+            data=diffs.loc[ct].reset_index(),
+            x="sample_group",
+            y=consts.soi,
+            swarm=False,
+            boxen=False,
+            bar=True,
+            ax=axs,
+            plot_kws=dict(palette=consts.sample_group_colors[1:]),
+            test=False,
+        )
+        axs[0].set(title=ct)
+        for ax in axs[1:]:
+            ax.set(title="")
+    for ax in axes.flat:
+        v = max(map(abs, ax.get_ylim()))
+        ax.set_ylim((-v, v))
+
+    for ax, sig in zip(axes[:, 0], consts.soi):
+        ax.set(ylabel=sig)
+    fig.savefig(
+        consts.results_dir / "signature_enrichment.cell_type_label.barplot.diff.svg",
+        **consts.figkws,
+    )
+
     # Signature correlation
     corrs = (
-        a[a.obs["disease_severity"].isin(["Severe"])]
+        a[a.obs["sample_group"].isin(["Severe"])]
         .obs.groupby("cell_type_label")[consts.soi]
         .corr()
     )
@@ -417,10 +496,28 @@ def score_cell_types(a):
     _corr = corr.loc[:, ~(corr == 1).all()]
     _corr = _corr.loc[:, _corr.sum().drop_duplicates().index]
 
+    diff_corrs = (
+        diffs.loc[:, "Severe", :].groupby("cell_type_label")[consts.soi].corr()
+    ).dropna()
+    diff_corr = diff_corrs.reset_index().pivot_table(
+        index="cell_type_label", columns="level_1"
+    )
+    _diff_corr = diff_corr.loc[:, ~(diff_corr == 1).all()]
+    _diff_corr = _diff_corr.loc[:, _diff_corr.sum().drop_duplicates().index]
+
     grid = clustermap(_corr, cmap="RdBu_r", center=0, figsize=(7, 10), col_cluster=False)
     grid.fig.savefig(
         consts.results_dir
-        / f"signature_enrichment.correlation.cell_type_label.heatmap.immune.svg",
+        / "signature_enrichment.correlation.cell_type_label.heatmap.immune.svg",
+        **consts.figkws,
+    )
+
+    grid = clustermap(
+        _diff_corr, cmap="RdBu_r", center=0, figsize=(7, 10), col_cluster=False
+    )
+    grid.fig.savefig(
+        consts.results_dir
+        / "signature_enrichment.correlation.cell_type_label.heatmap.immune.diff.svg",
         **consts.figkws,
     )
 
@@ -430,10 +527,10 @@ def score_cell_types(a):
     for ct in cts:
         fig, axes = plt.subplots(1, 2, sharex=True, sharey=True, figsize=(3 * 2, 3))
         _tpc1 = a.obs.loc[
-            (a.obs["cell_type_label"] == ct) & (a.obs["disease_severity"] == "Healthy")
+            (a.obs["cell_type_label"] == ct) & (a.obs["sample_group"] == "Healthy")
         ]
         _tpc2 = a.obs.loc[
-            (a.obs["cell_type_label"] == ct) & (a.obs["disease_severity"] == "Severe")
+            (a.obs["cell_type_label"] == ct) & (a.obs["sample_group"] == "Severe")
         ]
         if _tpc1.empty or _tpc2.empty:
             continue
@@ -519,13 +616,16 @@ class consts:
         "sample",
         "Sex",
         "Age",
-        "Status",
+        # "Status",
+        "sample_group",
         "disease_severity",
+        "timepoint",
         "Obesity",
         "Diabetes",
         "MetabolicDisorders",
         "ImmuneDisorders",
     ]
+    sample_group_colors = sns.color_palette("tab20")[:4] + sns.color_palette("tab20")[6:8]
     pbmc_markers = [
         # "TPPP3",
         # "KRT18",
